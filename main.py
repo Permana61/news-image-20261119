@@ -1,11 +1,17 @@
-"""News image entry: Thursday, 19 November 2026.
+"""News image entry v2: Thursday, 19 November 2026.
 
-Draws a 1024x1024 newspaper-style front page summing up the day's world news
-and writes it to $MAKEFUN_OUTPUT_DIR/entry.png (default "out").
+Draws a 1024x1024 newspaper-style front page summing up the day's world
+news in one image and writes it to $MAKEFUN_OUTPUT_DIR/entry.png
+(default "out").
 
-Everything here is hand-written in this session, Python 3.13 standard library
-only: a from-scratch PNG encoder (struct + zlib), a software rasterizer, and a
-hand-drawn 5x7 bitmap font. No network, no randomness, no timestamps in the
+Forty verified stories from seven continents, laid out as a four-column
+story grid under colour-coded continent sections, with a dotted world map
+beside the masthead.
+
+Everything here is hand-written in this session, Python 3.13 standard
+library only: a from-scratch PNG encoder (struct + zlib), a software
+rasterizer (rectangles, lines, circles, triangles), and a hand-drawn 5x7
+bitmap font. No images, no network, no randomness, no timestamps in the
 output, so two runs produce byte-identical files.
 """
 
@@ -18,21 +24,23 @@ W, H = 1024, 1024
 
 # ---------------------------------------------------------------- palette ---
 PAPER = (246, 241, 227)   # warm newsprint
-CARD = (253, 251, 244)    # panel background
+CARD = (253, 251, 244)    # story cell background
 INK = (26, 26, 26)
 RED = (176, 42, 48)
 NAVY = (22, 50, 79)
+BLUE = (52, 96, 158)
 GOLD = (200, 155, 60)
 TEAL = (46, 125, 107)
 ORANGE = (224, 122, 42)
-BROWN = (110, 72, 32)
 GREEN = (74, 124, 64)
+PURPLE = (110, 70, 150)
 GREY = (120, 116, 104)
-BLUE = (52, 96, 158)
+LIGHT = (232, 226, 210)   # hairline / section divider
 WHITE = (255, 255, 255)
 
 # ------------------------------------------------------------- bitmap font --
-# Hand-drawn 5x7 glyphs, '1' = ink, '0' = empty. Uppercase + digits + marks.
+# Hand-drawn 5x7 glyphs, '1' = ink, '.' = empty. Uppercase + digits + marks.
+# Every glyph is my own drawing of the letterform at this size.
 FONT = {
     'A': ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
     'B': ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
@@ -93,6 +101,8 @@ FONT = {
 
 # -------------------------------------------------------------- rasterizer --
 class Canvas:
+    """An RGB pixel buffer with primitive drawing operations."""
+
     def __init__(self, w, h, bg):
         self.w, self.h = w, h
         self.buf = bytearray(bytes(bg) * (w * h))
@@ -105,17 +115,24 @@ class Canvas:
     def fill_rect(self, x, y, w, h, c):
         x0, y0 = max(x, 0), max(y, 0)
         x1, y1 = min(x + w, self.w), min(y + h, self.h)
+        if x1 <= x0 or y1 <= y0:
+            return
+        row = bytes(c) * (x1 - x0)
         for yy in range(y0, y1):
-            base = (yy * self.w + x0) * 3
-            for xx in range(x0, x1):
-                i = base + (xx - x0) * 3
-                self.buf[i], self.buf[i + 1], self.buf[i + 2] = c
+            i = (yy * self.w + x0) * 3
+            self.buf[i:i + len(row)] = row
 
     def rect(self, x, y, w, h, c, t=1):
         self.fill_rect(x, y, w, t, c)
         self.fill_rect(x, y + h - t, w, t, c)
         self.fill_rect(x, y, t, h, c)
         self.fill_rect(x + w - t, y, t, h, c)
+
+    def hline(self, x, y, w, c, t=1):
+        self.fill_rect(x, y, w, t, c)
+
+    def vline(self, x, y, h, c, t=1):
+        self.fill_rect(x, y, t, h, c)
 
     def line(self, x0, y0, x1, y1, c, t=1):
         dx, dy = abs(x1 - x0), -abs(y1 - y0)
@@ -137,29 +154,10 @@ class Canvas:
     def circle(self, cx, cy, r, c):
         for yy in range(cy - r, cy + r + 1):
             dy = yy - cy
+            if abs(dy) > r:
+                continue
             dx = int((r * r - dy * dy) ** 0.5)
             self.fill_rect(cx - dx, yy, dx * 2 + 1, 1, c)
-
-    def ellipse(self, cx, cy, rx, ry, c):
-        for yy in range(cy - ry, cy + ry + 1):
-            dy = yy - cy
-            if ry == 0:
-                continue
-            dx = int(rx * (1 - (dy * dy) / (ry * ry)) ** 0.5)
-            self.fill_rect(cx - dx, yy, dx * 2 + 1, 1, c)
-
-    def triangle(self, x0, y0, x1, y1, x2, y2, c):
-        pts = sorted([(x0, y0), (x1, y1), (x2, y2)], key=lambda p: p[1])
-        (ax, ay), (bx, by), (cx_, cy_) = pts
-        for y in range(ay, cy_ + 1):
-            if y < by:
-                xa = ax + (bx - ax) * (y - ay) / (by - ay) if by != ay else ax
-                xb = ax + (cx_ - ax) * (y - ay) / (cy_ - ay) if cy_ != ay else ax
-            else:
-                xa = bx + (cx_ - bx) * (y - by) / (cy_ - by) if cy_ != by else bx
-                xb = ax + (cx_ - ax) * (y - ay) / (cy_ - ay) if cy_ != ay else ax
-            lo, hi = int(min(xa, xb)), int(max(xa, xb))
-            self.fill_rect(lo, y, hi - lo + 1, 1, c)
 
     # ---------------------------------------------------------------- text --
     def draw_char(self, x, y, ch, scale, c):
@@ -171,7 +169,7 @@ class Canvas:
                                    scale, scale, c)
 
     def text_width(self, s, scale):
-        return len(s) * 6 * scale - scale
+        return len(s) * 6 * scale - scale if s else 0
 
     def draw_text(self, x, y, s, scale, c):
         for i, ch in enumerate(s):
@@ -181,6 +179,7 @@ class Canvas:
         self.draw_text(cx - self.text_width(s, scale) // 2, y, s, scale, c)
 
     def wrap(self, s, max_w, scale):
+        """Greedy word wrap; returns a list of lines fitting max_w."""
         lines, cur = [], ""
         for word in s.split(" "):
             trial = (cur + " " + word).strip()
@@ -193,176 +192,193 @@ class Canvas:
             lines.append(cur)
         return lines
 
-
-# ------------------------------------------------------------------ icons --
-def icon_flags(cv, cx, sy):
-    """Three flags: USA, China, Russia."""
-    fw, fh = 64, 40
-    y = sy + 12
-    # USA
-    x = cx - 112
-    for i in range(7):
-        cv.fill_rect(x, y + i * 6, fw, 6, RED if i % 2 == 0 else WHITE)
-    cv.fill_rect(x, y, 26, 22, NAVY)
-    for r in range(3):
-        for cc in range(4):
-            cv.px(x + 3 + cc * 6, y + 4 + r * 6, WHITE)
-    cv.rect(x, y, fw, fh, INK)
-    # China
-    x = cx - 32
-    cv.fill_rect(x, y, fw, fh, RED)
-    cv.circle(x + 12, y + 10, 4, GOLD)
-    for dx, dy in ((26, 6), (32, 12), (32, 20), (26, 24)):
-        cv.circle(x + dx, y + dy, 2, GOLD)
-    cv.rect(x, y, fw, fh, INK)
-    # Russia
-    x = cx + 48
-    cv.fill_rect(x, y, fw, 14, WHITE)
-    cv.fill_rect(x, y + 14, fw, 13, BLUE)
-    cv.fill_rect(x, y + 27, fw, 13, RED)
-    cv.rect(x, y, fw, fh, INK)
-    cv.fill_rect(cx - 112, y + fh + 6, 288, 3, GOLD)
+# ------------------------------------------------------------- world map ---
+# Dotted world map, drawn from a hand-sketched land grid. Each entry is
+# (row, [(col_start, col_end), ...]) with inclusive column ranges on a
+# 48-column by 14-row grid; a dot is drawn for every land cell.
+MAP_LAND = [
+    (1, [(1, 11), (13, 15), (23, 26), (30, 46)]),
+    (2, [(1, 11), (13, 14), (23, 28), (29, 46)]),
+    (3, [(2, 10), (24, 27), (29, 31), (32, 45)]),
+    (4, [(3, 9), (23, 29), (31, 43)]),
+    (5, [(4, 7), (23, 30), (32, 41)]),
+    (6, [(7, 12), (24, 29), (37, 42)]),
+    (7, [(7, 12), (24, 28)]),
+    (8, [(8, 11), (25, 27)]),
+    (9, [(8, 11), (39, 45)]),
+    (10, [(9, 10), (40, 44)]),
+    (11, [(9, 9), (46, 47)]),
+    (12, [(46, 46)]),
+    (13, [(4, 4), (10, 10), (16, 16), (22, 22),
+          (28, 28), (34, 34), (40, 40), (46, 46)]),
+]
+MAP_COLS, MAP_ROWS = 48, 14
+MAP_DX, MAP_DY = 6, 6  # dot spacing in pixels
 
 
-def icon_scales(cv, cx, sy):
-    """Scales of justice."""
-    cy = sy + 32
-    cv.line(cx, cy - 26, cx, cy + 24, NAVY, 3)
-    cv.line(cx - 58, cy - 22, cx + 58, cy - 22, NAVY, 3)
-    cv.circle(cx, cy - 26, 4, GOLD)
-    for sgn in (-1, 1):
-        bx = cx + sgn * 58
-        cv.line(bx, cy - 22, bx, cy + 2, INK, 2)
-        cv.triangle(bx - 18, cy + 2, bx + 18, cy + 2, bx, cy + 20, GOLD)
-        cv.line(bx - 18, cy + 2, bx + 18, cy + 2, INK, 2)
-    cv.line(cx - 30, cy + 24, cx + 30, cy + 24, NAVY, 3)
-    cv.line(cx - 20, cy + 28, cx + 20, cy + 28, NAVY, 2)
+def draw_map(cv, x0, y0, color):
+    for row, spans in MAP_LAND:
+        for a, b in spans:
+            for col in range(a, b + 1):
+                cx = x0 + col * MAP_DX + MAP_DX // 2
+                cy = y0 + row * MAP_DY + MAP_DY // 2
+                cv.circle(cx, cy, 2, color)
 
 
-def icon_bridge(cv, cx, sy):
-    """A bridge with a crack in the middle."""
-    deck = sy + 42
-    cv.line(cx - 200, deck, cx - 8, deck, NAVY, 4)
-    cv.line(cx + 8, deck, cx + 200, deck, NAVY, 4)
-    for tx in (cx - 110, cx + 110):
-        cv.line(tx, sy + 6, tx, deck, NAVY, 4)
-        cv.line(tx - 4, sy + 6, tx + 4, sy + 6, NAVY, 4)
-    cv.line(cx - 110, sy + 6, cx - 8, deck, GREY, 2)
-    cv.line(cx + 110, sy + 6, cx + 8, deck, GREY, 2)
-    cv.line(cx - 110, sy + 6, cx, deck - 2, GREY, 2)
-    cv.line(cx + 110, sy + 6, cx, deck - 2, GREY, 2)
-    # crack zigzag across the gap
-    pts = [(cx - 8, deck - 2), (cx - 3, deck + 6), (cx + 2, deck - 4),
-           (cx + 6, deck + 5), (cx + 8, deck - 2)]
-    for a, b in zip(pts, pts[1:]):
-        cv.line(a[0], a[1], b[0], b[1], RED, 2)
-    cv.line(cx - 200, deck + 10, cx + 200, deck + 10, BLUE, 2)
-
-
-def icon_derrick(cv, cx, sy):
-    """Oil derrick with a flame."""
-    base = sy + 58
-    cv.line(cx - 58, base, cx, sy + 16, INK, 3)
-    cv.line(cx + 58, base, cx, sy + 16, INK, 3)
-    cv.line(cx - 58, base, cx + 58, base, INK, 3)
-    for yy, half in ((sy + 30, 38), (sy + 42, 24), (sy + 52, 10)):
-        cv.line(cx - half, yy, cx + half, yy, INK, 2)
-    # flame above the derrick
-    cv.ellipse(cx, sy + 12, 13, 17, ORANGE)
-    cv.ellipse(cx, sy + 14, 7, 10, GOLD)
-    cv.triangle(cx - 7, sy + 2, cx + 7, sy + 2, cx, sy - 8, ORANGE)
-
-
-def icon_chart(cv, cx, sy):
-    """Rising bars and an arrow."""
-    base = sy + 56
-    cv.line(cx - 180, sy + 6, cx - 180, base, INK, 2)
-    cv.line(cx - 180, base, cx + 190, base, INK, 2)
-    bars = [(cx - 150, 18, TEAL), (cx - 90, 28, GOLD),
-            (cx - 30, 38, NAVY), (cx + 30, 46, TEAL)]
-    for bx, bh, col in bars:
-        cv.fill_rect(bx, base - bh, 42, bh, col)
-    cv.line(cx - 140, base - 22, cx + 150, sy + 2, RED, 4)
-    cv.triangle(cx + 154, sy + 2, cx + 128, sy - 5, cx + 131, sy + 15, RED)
-
-
-def icon_sunflower(cv, cx, sy):
-    """A sunflower."""
-    cv.line(cx, sy + 58, cx, sy + 34, GREEN, 3)
-    cv.ellipse(cx - 16, sy + 48, 14, 6, GREEN)
-    import math
-    for k in range(8):
-        ang = k * math.pi / 4
-        px = cx + int(21 * math.cos(ang))
-        py = sy + 22 + int(21 * math.sin(ang))
-        cv.circle(px, py, 8, GOLD)
-    cv.circle(cx, sy + 22, 14, BROWN)
-    for dx, dy in ((-5, -4), (5, -4), (-5, 5), (5, 5), (0, 0)):
-        cv.px(cx + dx, sy + 22 + dy, GOLD)
-
-
-ICONS = {
-    "flags": icon_flags,
-    "scales": icon_scales,
-    "bridge": icon_bridge,
-    "derrick": icon_derrick,
-    "chart": icon_chart,
-    "sunflower": icon_sunflower,
-}
-
-STORIES = [
-    ("SHENZHEN - CHINA", "THREE POWERS MEET",
-     "TRUMP, XI AND PUTIN HOLD FIRST-EVER SUMMIT, SIGN A 'PEACE DECLARATION'.",
-     "flags", NAVY),
-    ("THE HAGUE", "MYANMAR GUILTY",
-     "WORLD COURT FINDS MYANMAR GUILTY OF GENOCIDE AGAINST THE ROHINGYA.",
-     "scales", RED),
-    ("CRIMEA", "BRIDGE HIT AGAIN",
-     "THIRD UKRAINIAN STRIKE IN A WEEK HALTS RAIL ON THE CRIMEA BRIDGE.",
-     "bridge", NAVY),
-    ("THE GULF", "GULF ATTACKS WIDEN",
-     "IRAN HITS KUWAIT AND BAHRAIN AS THE FIGHT OVER HORMUZ SPREADS.",
-     "derrick", RED),
-    ("WALL STREET", "RECORD $81.3BN IPO",
-     "ANTHROPIC RAISES A RECORD $81.3BN; SHARES START TRADING AS ANT ON NASDAQ.",
-     "chart", TEAL),
-    ("NEW YORK", "VAN GOGH: $190.4M",
-     "VAN GOGH SELLS FOR A RECORD $190.4M AT SOTHEBY'S IN NEW YORK.",
-     "sunflower", GOLD),
+# ------------------------------------------------------------------ data ---
+# Each story: (headline, summary, outlet). Headlines carry their number as a
+# "NN " prefix and are kept short so they wrap to at most two lines at
+# scale 2 in a 232 px cell; summaries are capped at 76 characters so they
+# wrap to at most two lines at scale 1.
+#
+# Sections: (name, accent colour, [story indices]) — story order is global
+# 01..40, grouped by continent.
+SECTIONS = [
+    ("ASIA", RED, 11),
+    ("EUROPE", BLUE, 8),
+    ("NORTH AMERICA", NAVY, 6),
+    ("AFRICA", ORANGE, 5),
+    ("SOUTH AMERICA", GREEN, 4),
+    ("OCEANIA", TEAL, 4),
+    ("ANTARCTICA", PURPLE, 2),
 ]
 
+STORIES = [
+    # Asia (11)
+    ("01 TRUMP, XI, PUTIN SIGN PEACE", "First three-way summit in Shenzhen agrees nuclear-risk, UN-reform text.", "BBC"),
+    ("02 IRAN HITS KUWAIT, BAHRAIN", "Tehran widens attacks as Hormuz fight spreads after US strikes on Qeshm.", "WALL STREET JOURNAL"),
+    ("03 HOUTHI MISSILE HITS RIYADH", "Missile damages Saudi wealth-fund tower; no injuries reported.", "SKY NEWS"),
+    ("04 COP31 DROPS FOSSIL PLEDGE", "COP31 draft drops fossil-fuel phase-out, keeps 35% clean target.", "UN NEWS"),
+    ("05 CYCLONE AKVAN NEARS INDIA", "Storm 440 km off Andhra coast, winds 90-100 km/h; landfall due Friday.", "INDIA MET DEPT"),
+    ("06 PAKISTAN RAIDS KILL 22", "Army kills 22 in 48-hour raids on hideouts in South Waziristan.", "TBS NEWS"),
+    ("07 BANGLADESH LOCKDOWN, ARSON", "Awami League lockdown: 2 killed, Yunus home torched, 97 guard platoons out.", "REUTERS"),
+    ("08 TAIWAN STOCKS CRASH 4.4%", "Index plunges 1,768 points to 38,427; TSMC falls 3.45% to NT$2,100.", "GLOBAL BANKING & FINANCE"),
+    ("09 MONGOLIA OUSTS PRESIDENT", "Parliament votes to remove Khurelsukh over $25m railway bribe claims.", "GOGO MONGOLIA"),
+    ("10 INDONESIA PASSES SEIZURE LAW", "State can now seize corruption-linked assets without a conviction.", "REUTERS"),
+    ("11 DELHI SMOG REBOUNDS, AQI 282", "Delhi AQI jumps to 282, up 67 in a day; Pusa station worst at 361.", "ECONOMIC TIMES"),
+    # Europe (8)
+    ("12 KERCH BRIDGE HIT THIRD TIME", "Ukraine hits Crimea bridge third time in four days; rail traffic halted.", "BBC"),
+    ("13 WORLD COURT: MYANMAR GUILTY", "ICJ rules 9-6 on Rohingya; first genocide verdict against a state.", "BBC"),
+    ("14 ALLIES MEET IN BERLIN", "30+ leaders in Berlin, Zelenskyy joins; Europe ready for Russia talks.", "NATO"),
+    ("15 MONTENEGRO CLOSES EU CHAPTERS", "EU, Montenegro close chapters 16 and 22; 25 of 33 closed, 2028 entry eyed.", "COUNCIL OF THE EU"),
+    ("16 DUTCH: DON'T BUY SMART GLASSES", "Dutch watchdog studied 6 AI glasses, warns not to buy; unsafe for users.", "REUTERS"),
+    ("17 STORM FLOODS BOSNIA", "Storm floods Bosnia, Montenegro; 80 l/m2 rain in Gacko, gusts 76 km/h.", "ALLATRA"),
+    ("18 GTA 6 LAUNCHES, 17M SOLD", "Launches at midnight; 17m copies, $1.65bn by Thursday morning.", "STOCKTWITS"),
+    ("19 BARCELONA THRASH SERVETTE 6-0", "UWCL: Barcelona beat Servette 6-0; Arsenal lose 0-2 to Lyon.", "UEFA"),
+    # North America (6)
+    ("20 ANTHROPIC IPO: RECORD $81.3B", "Priced $83 a share, valued near $1.5T; debuts on Nasdaq as ANT.", "BUSINESSWORLD"),
+    ("21 VAN GOGH SELLS FOR $190.4M", "1890 Chataigniers en fleurs sells at Sotheby's New York, artist record.", "REUTERS"),
+    ("22 SENATE PASSES ENERGY BILL", "Senate passes permitting reform 62-33, speeding energy approvals.", "USA TODAY"),
+    ("23 TRUMP FIRES CYBER CHIEF", "Cyber chief Cairncross fired after US tech outages; Pentagon CIO steps in.", "CNN"),
+    ("24 HAITI RAID KILLS 34", "Police kill 34 alleged gang members in Martissant, Port-au-Prince.", "REUTERS"),
+    ("25 FAA TO REVEAL GROUND-STOP", "FAA to announce cause of router outage that grounded 18,000+ flights.", "REUTERS"),
+    # Africa (5)
+    ("26 SOMALIA EXPELS UAE ENVOY", "Mogadishu orders UAE envoy out in 72 hours, recalls own envoy.", "REUTERS"),
+    ("27 ZIMBABWE CLEARS 250,000 MINES", "HALO Trust destroys 250,000 mines since 2013; 4% of land still mined.", "HALO TRUST"),
+    ("28 SENEGAL BOAT SINKS, DOZENS LOST", "Migrant boat with about 100 capsizes off Yenne; 1 dead, dozens missing.", "REUTERS"),
+    ("29 SOUTH AFRICA HOLDS RATE 7.25%", "Reserve Bank keeps repo at 7.25% in 4-3 vote; prime stays 10.75%.", "REUTERS"),
+    ("30 MARATHON CHAMP BANNED 3 YEARS", "Kenya's Peres Jepchirchir banned 3 years for EPO; Sydney win stripped.", "REUTERS"),
+    # South America (4)
+    ("31 BRAZIL SELLS $1BN TO DEFEND REAL", "Central bank sells $1bn as real falls 0.95% to 5.92 per dollar.", "REUTERS"),
+    ("32 LULA PROTECTS RAONI LAND", "Lula declares 362,243-ha Kapot Nhinore land for Kayapo and Yudja.", "LATINNEWS"),
+    ("33 COLOMBIA TAX PROTESTS", "Unions march in Bogota, Cali, Medellin vs tax bill; threshold cut to $985.", "AFP"),
+    ("34 ARGENTINA HEALTH CURBS BACK", "Supreme Court voids Milei decree; prepagas need state OK for fee rises.", "PARTICLE NEWS"),
+    # Oceania (4)
+    ("35 FIJI DECLARES DROUGHT DISASTER", "Fiji declares 1-month disaster state; FJ$20m for water as rain stays low.", "REUTERS"),
+    ("36 TONGA DROUGHT EMERGENCY 27 DAYS", "Tonga declares 27-day drought emergency; very dry Nov-Jan likely.", "AFP"),
+    ("37 19 WHALES DIE IN NZ STRANDING", "24 sperm whales strand at Ninety Mile Beach; 19 dead, 5 alive, poor health.", "RNZ"),
+    ("38 DARWIN PORT BUYBACK STALLS", "Landbridge denies Darwin Port sale talks; Albanese vows buyback, no date.", "SPLASH247"),
+    # Antarctica (2)
+    ("39 AUSTRALIA REDESIGNS ANTARCTIC", "AAD unveils 6 new science programmes from 2028-29 under Decadal Strategy.", "AUSTRALIAN ANTARCTIC PROGRAM"),
+    ("40 US AIR GUARD SENDS 5 LC-130S", "109th Wing deploys 5 ski LC-130s, 75 personnel for Operation Deep Freeze.", "THE DEFENSE WATCH"),
+]
 
-def draw_panel(cv, x, y, w, h, tag, headline, body, icon, accent):
-    cv.fill_rect(x, y, w, h, CARD)
-    cv.rect(x, y, w, h, INK, 2)
-    cv.fill_rect(x, y, w, 6, accent)
-    cv.draw_text(x + 16, y + 16, tag, 2, RED)
-    ICONS[icon](cv, x + w // 2, y + 40)
-    cv.draw_text(x + 16, y + 116, headline, 4, INK)
-    by = y + 160
-    for i, line in enumerate(cv.wrap(body, w - 32, 3)):
-        cv.draw_text(x + 16, by + i * 24, line, 3, INK)
+# ---------------------------------------------------------------- layout ---
+MARGIN = 16
+COLS = 4
+COL_W = 240
+COL_GUT = 10
+CELL_H = 60
+SEC_H = 14
+SEC_GAP = 0
 
 
-def draw():
-    cv = Canvas(W, H, PAPER)
+def draw_header(cv):
+    # Masthead, left; dotted map, right.
+    cv.draw_text(24, 20, "THE WORLD IN ONE DAY", 4, INK)
+    cv.draw_text(24, 56, "THURSDAY 19 NOVEMBER 2026", 2, RED)
+    draw_map(cv, 700, 16, NAVY)
+    cv.draw_text_center(700 + MAP_COLS * MAP_DX // 2, 104,
+                        "WHERE IT HAPPENED", 1, GREY)
+    # Stat strip.
+    cv.fill_rect(MARGIN, 114, W - 2 * MARGIN, 28, NAVY)
+    t1, t2 = "40 STORIES", "7 CONTINENTS"
+    w1 = cv.text_width(t1, 2)
+    w2 = cv.text_width(t2, 2)
+    total = w1 + 10 + 8 + 10 + w2
+    x = (W - total) // 2
+    cv.draw_text(x, 121, t1, 2, WHITE)
+    cv.fill_rect(x + w1 + 10, 128, 8, 8, GOLD)
+    cv.draw_text(x + w1 + 28, 121, t2, 2, WHITE)
+    cv.hline(MARGIN, 146, W - 2 * MARGIN, INK, 2)
+
+
+def draw_section_header(cv, y, name, accent, count, first, last):
+    cv.fill_rect(MARGIN, y, 8, SEC_H, accent)
+    cv.draw_text(MARGIN + 14, y, name, 2, accent)
+    right = "%d STORIES  %02d-%02d" % (count, first, last)
+    cv.draw_text(W - MARGIN - cv.text_width(right, 1), y + 3, right, 1, GREY)
+
+
+def draw_story(cv, x, y, headline, summary, outlet, accent):
+    cv.fill_rect(x, y, COL_W, CELL_H, CARD)
+    cv.rect(x, y, COL_W, CELL_H, LIGHT, 1)
+    cv.fill_rect(x, y, COL_W, 3, accent)
+    # Headline, scale 2, at most two lines.
+    lines = cv.wrap(headline, COL_W - 10, 2)
+    for i, ln in enumerate(lines[:2]):
+        cv.draw_text(x + 5, y + 5 + i * 14, ln, 2, INK)
+    # Summary, scale 1, at most two lines.
+    slines = cv.wrap(summary, COL_W - 10, 1)
+    for i, ln in enumerate(slines[:2]):
+        cv.draw_text(x + 5, y + 35 + i * 8, ln, 1, INK)
+    # Source tag.
+    cv.draw_text(x + 5, y + CELL_H - 8, "SOURCE: " + outlet, 1, RED)
+
+
+def draw(cv):
     cv.rect(8, 8, W - 16, H - 16, INK, 3)
-    # header
-    cv.draw_text_center(W // 2, 30, "THE WORLD IN ONE IMAGE", 2, RED)
-    cv.draw_text_center(W // 2, 56, "THURSDAY, 19 NOVEMBER 2026", 6, INK)
-    cv.fill_rect(120, 116, W - 240, 3, RED)
-    cv.draw_text_center(W // 2, 130, "SIX STORIES THAT DEFINED THE DAY", 2, NAVY)
-    # grid: 2 columns x 3 rows
-    pw, ph, gap = 484, 257, 16
-    gx, gy = 20, 164
-    for i, (tag, head, body, icon, accent) in enumerate(STORIES):
-        px = gx + (i % 2) * (pw + gap)
-        py = gy + (i // 2) * (ph + gap)
-        draw_panel(cv, px, py, pw, ph, tag, head, body, icon, accent)
-    # footer
-    cv.draw_text_center(W // 2, 980,
-                        "SOURCES: REUTERS - AP - USA TODAY - THE TIMES - WSJ - NYT",
-                        2, GREY)
+    draw_header(cv)
+    y = 152
+    idx = 0
+    for name, accent, count in SECTIONS:
+        first = idx + 1
+        last = idx + count
+        draw_section_header(cv, y, name, accent, count, first, last)
+        y += SEC_H + 2
+        rows = (count + COLS - 1) // COLS
+        for r in range(rows):
+            for c in range(COLS):
+                k = idx + r * COLS + c
+                if k >= idx + count:
+                    break
+                if k >= len(STORIES):
+                    break
+                headline, summary, outlet = STORIES[k]
+                x = MARGIN + 1 + c * (COL_W + COL_GUT)
+                draw_story(cv, x, y + r * CELL_H, headline, summary,
+                           outlet, accent)
+            # (loop continues)
+        idx += count
+        y += rows * CELL_H + SEC_GAP
+    # Footer.
+    cv.draw_text_center(W // 2, y + 4,
+                        "ALL FORTY STORIES VERIFIED AGAINST REPORTING PUBLISHED ON THURSDAY 19 NOVEMBER 2026.",
+                        1, GREY)
+    cv.draw_text_center(W // 2, y + 15,
+                        "DRAWN BY A DETERMINISTIC PYTHON PROGRAM (STDLIB ONLY). NO PHOTOS, NO EXTERNAL DATA.",
+                        1, GREY)
+    print("layout height:", y + 26, "of", H)
     return cv
 
 
@@ -390,7 +406,7 @@ def encode_png(cv):
 def main():
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "out")
     os.makedirs(out_dir, exist_ok=True)
-    data = encode_png(draw())
+    data = encode_png(draw(Canvas(W, H, PAPER)))
     path = os.path.join(out_dir, "entry.png")
     with open(path, "wb") as f:
         f.write(data)
